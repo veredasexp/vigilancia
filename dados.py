@@ -200,7 +200,7 @@ if st.button(f"🔍 INICIAR INVESTIGAÇÃO PROFUNDA: {doenca_foco.upper()}"):
                 st.plotly_chart(fig_mapa, use_container_width=True)
                 
 
-[Image of a choropleth map of Brazil]
+#[Image of a choropleth map of Brazil]
 
 
         with tab2:
@@ -222,3 +222,4 @@ if st.button(f"🔍 INICIAR INVESTIGAÇÃO PROFUNDA: {doenca_foco.upper()}"):
 # =================================================================
 st.markdown("---")
 st.caption(f"Plataforma de Vigilância Preditiva v7.0 | Dados atualizados em: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+
