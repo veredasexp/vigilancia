@@ -1,6 +1,6 @@
 streamlit
 pandas
 pytrends
-fpdf2
 plotly
 scipy
+fpdf2
