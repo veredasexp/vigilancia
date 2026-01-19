@@ -3,4 +3,4 @@ pandas
 pytrends
 plotly
 scipy
-fpdf2
+numpy
