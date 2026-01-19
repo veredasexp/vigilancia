@@ -2,5 +2,5 @@ streamlit
 pandas
 pytrends
 plotly
-scipy
 numpy
+scipy
