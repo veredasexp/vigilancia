@@ -8,137 +8,183 @@ from scipy.stats import zscore
 import time
 from datetime import datetime
 
-# --- CONFIGURAÇÃO DE AMBIENTE ---
-st.set_page_config(page_title="Inteligência de Vigilância Digital", layout="wide")
-st.title("🛰️ Sistema de Análise Epidemiológica Preditiva")
-st.markdown("---")
+# =================================================================
+# CONFIGURAÇÕES DE INTERFACE E ESTILO DE PESQUISA
+# =================================================================
+st.set_page_config(
+    page_title="Vigilância Epidemiológica de Alta Precisão",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# --- BIBLIOTECA DE ONTOLOGIA MÉDICA (Doenças e seus Sintomas Relacionados) ---
-# O sistema expande a busca para captar a jornada do paciente, não apenas o nome da doença.
+st.title("🔬 Plataforma de Inteligência Epidemiológica Digital")
+st.markdown("""
+Esta ferramenta realiza **Vigilância Baseada em Rumores (VBR)** com filtragem de ruído mediático e 
+análise de diagnóstico diferencial digital. O sistema avalia a consistência dos sintomas para 
+determinar a probabilidade de um evento biológico real.
+""")
+
+# =================================================================
+# MOTOR DE CONEXÃO COM RETRY LOGIC E CACHE (ANTI-BLOQUEIO)
+# =================================================================
+@st.cache_resource
+def inicializar_pytrends():
+    """Inicializa a conexão com o Google Trends API com parâmetros de persistência."""
+    return TrendReq(hl='pt-BR', tz=360, retries=5, backoff_factor=0.5)
+
+@st.cache_data(ttl=3600)
+def executar_requisicao_google(termos, geo, timeframe):
+    """Executa a busca com tratamento de erro 429 e cache de 1 hora."""
+    pytrends = inicializar_pytrends()
+    try:
+        pytrends.build_payload(termos, geo=geo, timeframe=timeframe)
+        df = pytrends.interest_over_time()
+        if not df.empty:
+            return df.drop(columns=['isPartial'], errors='ignore')
+        return None
+    except Exception as e:
+        if "429" in str(e):
+            st.error("🚨 Limite de taxa do Google atingido (Erro 429). O sistema entrou em modo de espera.")
+        else:
+            st.error(f"Erro na requisição: {e}")
+        return None
+
+# =================================================================
+# BIBLIOTECA ONTOLÓGICA DE AGRAVOS (DEFINIÇÕES TÉCNICAS)
+# =================================================================
+# Definimos as doenças, seus sintomas sentinelas e seus confundidores clínicos.
 BIBLIOTECA_VIGILANCIA = {
     "Dengue": {
-        "termos": ["dengue", "dor atrás dos olhos", "manchas vermelhas", "exantema", "plaquetas baixas"],
-        "confundidores": ["Gripe", "Zika"],
-        "cor": "#e63946"
+        "termos": ["dengue", "dor atrás dos olhos", "manchas vermelhas", "febre alta", "plaquetas"],
+        "confundidores": ["Gripe", "Zika", "Leptospirose"],
+        "descricao": "Arbovirose clássica. A análise foca na tríade febre-exantema-dor retro-orbital."
     },
-    "Gripe/Influenza": {
-        "termos": ["gripe", "tosse seca", "dor de garganta", "influenza", "calafrios"],
-        "confundidores": ["COVID-19", "Resfriado"],
-        "cor": "#457b9d"
+    "Gripe / Síndromes Respiratórias": {
+        "termos": ["gripe", "tosse seca", "dor de garganta", "coriza", "influenza"],
+        "confundidores": ["COVID-19", "Resfriado Comum", "Pneumonia"],
+        "descricao": "Monitoramento de Influenza e outros vírus respiratórios sazonais."
     },
     "COVID-19": {
-        "termos": ["covid", "perda de paladar", "falta de ar", "teste covid", "anosmia"],
-        "confundidores": ["Gripe", "Sinusite"],
-        "cor": "#1d3557"
+        "termos": ["covid", "falta de ar", "teste covid", "perda de paladar", "perda de olfato"],
+        "confundidores": ["Gripe", "Sinusite", "Ansiedade"],
+        "descricao": "Vigilância de SARS-CoV-2 com foco em sintomas específicos (anosmia/ageusia)."
     },
     "Doenças Gastrointestinais": {
-        "termos": ["diarreia", "vômito", "dor abdominal", "enjoo", "desidratação"],
-        "confundidores": ["Intoxicação Alimentar", "Virose"],
-        "cor": "#2a9d8f"
-    },
-    "Saúde Mental (Ansiedade/Pânico)": {
-        "termos": ["ansiedade", "crise de pânico", "falta de ar ansiedade", "palpitação", "insônia"],
-        "confundidores": ["Problemas Cardíacos", "Estresse"],
-        "cor": "#8e44ad"
+        "termos": ["diarreia", "vômito", "enjoo", "dor abdominal", "desidratação"],
+        "confundidores": ["Intoxicação Alimentar", "Virose Infantil", "Cólera"],
+        "descricao": "Vigilância de transmissão hídrica e alimentar."
     }
 }
 
-# --- INICIALIZAÇÃO DO MOTOR ---
-try:
-    pytrends = TrendReq(hl='pt-BR', tz=360)
-except Exception as e:
-    st.error(f"Falha na conexão com o servidor de dados: {e}")
-
-# --- INTERFACE DE INVESTIGAÇÃO ---
+# =================================================================
+# INTERFACE DE SELEÇÃO E PARÂMETROS
+# =================================================================
 with st.sidebar:
     st.header("🎯 Parâmetros de Investigação")
     doenca_foco = st.selectbox("Selecione o Agravo Alvo:", list(BIBLIOTECA_VIGILANCIA.keys()))
-    uf_foco = st.selectbox("Abrangência Geográfica (UF):", ["BR-MS", "BR-SP", "BR-RJ", "BR-MG", "BR-PR", "BR-GO", "BR-CE", "BR-PE"])
-    tempo_analise = st.radio("Janela Temporal:", ["Últimos 3 meses", "Últimos 12 meses"])
-    janela = 'today 3-m' if tempo_analise == "Últimos 3 meses" else 'today 12-m'
+    uf_foco = st.selectbox("Unidade Federativa (UF):", 
+                          ["BR-MS", "BR-SP", "BR-RJ", "BR-MG", "BR-PR", "BR-GO", "BR-CE", "BR-PE", "BR-AM"])
+    
+    st.markdown("---")
+    st.subheader("Configurações Avançadas")
+    tempo_analise = st.radio("Janela de Observação:", ["Últimos 3 meses", "Últimos 12 meses"])
+    tf = 'today 3-m' if tempo_analise == "Últimos 3 meses" else 'today 12-m'
+    
+    st.info("O sistema analisa a convergência de sintomas para filtrar ruídos causados por notícias.")
 
-if st.button(f"🔍 EXECUTAR VARREDURA PROFUNDA: {doenca_foco.upper()}"):
-    try:
-        dados_foco = BIBLIOTECA_VIGILANCIA[doenca_foco]
-        termos_expandidos = dados_foco["termos"]
+# =================================================================
+# EXECUÇÃO DA INVESTIGAÇÃO
+# =================================================================
+if st.button(f"🔍 INICIAR INVESTIGAÇÃO PROFUNDA: {doenca_foco.upper()}"):
+    info = BIBLIOTECA_VIGILANCIA[doenca_foco]
+    termos_sintomas = info["termos"]
+    confundidores = info["confundidores"]
+
+    with st.status("Processando dados e calculando indicadores de confiança...", expanded=True) as status:
+        # 1. Coleta de Sintomas Expandida
+        st.write("Buscando série temporal de sintomas sentinelas...")
+        df_sintomas = executar_requisicao_google(termos_sintomas, uf_foco, tf)
+        time.sleep(2) # Intervalo de segurança
         
-        with st.status("Realizando varredura sindrômica e cruzamento de dados...", expanded=True) as status:
-            # 1. Coleta de Dados de Sintomas (O sistema busca todos os termos da biblioteca)
-            pytrends.build_payload(termos_expandidos, geo=uf_foco, timeframe=janela)
-            df_sintomas = pytrends.interest_over_time()
-            if not df_sintomas.empty:
-                df_sintomas = df_sintomas.drop(columns=['isPartial'], errors='ignore')
-            
-            # 2. Coleta para Análise de Distorção (Confundidores)
-            confundidor = dados_foco["confundidores"][0]
-            pytrends.build_payload([doenca_foco, confundidor], geo=uf_foco, timeframe=janela)
-            df_distorsao = pytrends.interest_over_time()
-            
-            # 3. Coleta Geográfica (Mapa Nacional)
-            pytrends.build_payload([doenca_foco], geo='BR', timeframe='today 1-m')
-            df_mapa = pytrends.interest_by_region(resolution='COUNTRY', inc_low_vol=True)
-            
-            status.update(label="Varredura Concluída!", state="complete")
+        # 2. Coleta de Diagnóstico Diferencial (Distorção)
+        st.write("Analisando possíveis distorções por doenças espelho...")
+        df_distorsao = executar_requisicao_google([doenca_foco, confundidores[0]], uf_foco, tf)
+        time.sleep(2)
+        
+        # 3. Coleta Geográfica
+        st.write("Gerando mapa de calor nacional...")
+        df_mapa = executar_requisicao_google([doenca_foco], 'BR', 'today 1-m')
+        
+        status.update(label="Investigação Concluída com Sucesso!", state="complete")
 
-        if not df_sintomas.empty:
-            # --- CÁLCULOS ESTATÍSTICOS DE PRECISÃO ---
-            # Índice de Convergência: Se os sintomas sobem juntos, a chance de ser real é alta
-            correlacao_matriz = df_sintomas.corr()
-            indice_convergencia = correlacao_matriz.mean().mean()
-            
-            # Cálculo de Anomalia (Z-Score)
-            media_sintomas = df_sintomas.mean(axis=1)
-            z_scores = zscore(media_sintomas)
-            ultimo_z = z_scores[-1]
-            
-            # --- ÍNDICE DE CHANCE REAL (Vero-Score) ---
-            # Combina intensidade (Z-Score) com convergência de sintomas
-            probabilidade_real = (indice_convergencia * 0.5 + (min(ultimo_z, 3)/3) * 0.5) * 100
-            probabilidade_real = max(0, min(100, probabilidade_real))
+    if df_sintomas is not None:
+        # ---------------------------------------------------------
+        # CÁLCULOS ESTATÍSTICOS AVANÇADOS (O CORAÇÃO DA PESQUISA)
+        # ---------------------------------------------------------
+        # Cálculo de Convergência (Pearson Correlation Matrix)
+        matriz_corr = df_sintomas.corr()
+        convergencia_media = matriz_corr.mean().mean() # Quão 'sincronizados' estão os sintomas
+        
+        # Cálculo de Intensidade (Z-Score)
+        serie_media = df_sintomas.mean(axis=1)
+        scores = zscore(serie_media)
+        ultimo_z = scores[-1]
+        
+        # Cálculo de Probabilidade de Surto Real (Índice de Chance)
+        # O índice aumenta se Z-Score é alto E se a convergência é alta.
+        chance_real = (convergencia_media * 0.4 + (min(ultimo_z, 3)/3) * 0.6) * 100
+        chance_real = max(0, min(100, chance_real))
 
-            # --- DISPLAY DE RESULTADOS ---
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Chance de Surto Real", f"{probabilidade_real:.1f}%")
-            col2.metric("Convergência de Sintomas", f"{indice_convergencia:.2f}")
-            col3.metric("Intensidade (Z-Score)", f"{ultimo_z:.2f}")
+        # ---------------------------------------------------------
+        # EXIBIÇÃO: PAINEL DE INDICADORES (DASHBOARD)
+        # ---------------------------------------------------------
+        st.header(f"📊 Relatório de Evidências: {doenca_foco}")
+        
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Probabilidade de Surto Real", f"{chance_real:.1f}%")
+        m2.metric("Sincronia de Sintomas", f"{convergencia_media:.2f}")
+        m3.metric("Intensidade (Z-Score)", f"{ultimo_z:.2f}")
 
-            st.divider()
+        st.divider()
 
-            # --- ANÁLISE DETALHADA E PARECER ---
-            st.subheader("📝 Parecer Técnico de Investigação")
-            
-            col_p1, col_p2 = st.columns([2, 1])
-            
-            with col_p1:
-                if probabilidade_real > 70 and ultimo_z > 1.5:
-                    st.error(f"**ALERTA CRÍTICO:** O agravo '{doenca_foco}' apresenta alta consistência interna. "
-                             f"A subida do interesse ({ultimo_z:.2f} desvios padrão) é acompanhada por uma forte convergência "
-                             f"dos sintomas sentinelas ({indice_convergencia:.2f}). Esta assinatura digital é característica de surtos biológicos reais.")
-                elif probabilidade_real > 40:
-                    st.warning(f"**ALERTA MODERADO:** Existe aumento de buscas para '{doenca_foco}', mas a convergência de sintomas é mediana. "
-                               "O dado pode estar sofrendo influência de notícias ou campanhas de conscientização.")
-                else:
-                    st.success("**SITUAÇÃO SOB CONTROLE:** Interesse residual ou flutuação normal de mercado/noticiário.")
+        # ---------------------------------------------------------
+        # EXIBIÇÃO: ANÁLISE QUALITATIVA E PARECER TÉCNICO
+        # ---------------------------------------------------------
+        col_parecer, col_distorsao = st.columns([2, 1])
+        
+        with col_parecer:
+            st.subheader("📝 Parecer Analítico")
+            if chance_real > 75:
+                st.error(f"**ALERTA DE SURTO IDENTIFICADO:** O sistema detectou um aumento consistente e convergente. "
+                         f"A intensidade de buscas ({ultimo_z:.2f} desvios padrões) associada à alta sincronia dos sintomas "
+                         f"({convergencia_media:.2f}) indica uma assinatura epidemiológica típica de propagação viral real.")
+            elif chance_real > 40:
+                st.warning(f"**MONITORAMENTO RECOMENDADO:** Existe um aumento de rumores, porém com baixa sincronia entre os termos técnicos. "
+                           "Isso sugere que o volume pode estar sendo 'inflado' por notícias ou pânico social momentâneo.")
+            else:
+                st.success("**SITUAÇÃO SOB CONTROLE:** Os dados digitais apresentam flutuações normais sem padrões de surto.")
 
-            with col_p2:
-                # --- ANÁLISE DE DISTORÇÃO (Diagnóstico Diferencial Digital) ---
-                val_foco = df_distorsao[doenca_foco].iloc[-1]
-                val_conf = df_distorsao[confundidor].iloc[-1]
+        with col_distorsao:
+            st.subheader("🕵️ Análise de Distorção")
+            if df_distorsao is not None:
+                val_alvo = df_distorsao[doenca_foco].iloc[-1]
+                val_espelho = df_distorsao[confundidores[0]].iloc[-1]
                 
-                st.write("**Risco de Distorção Sintomática**")
-                if val_conf > val_foco * 0.7:
-                    st.info(f"⚠️ **ALTO RISCO DE ERRO:** As buscas por '{confundidor}' estão muito próximas de '{doenca_foco}'. "
-                            f"Como estas patologias compartilham sinais clínicos, o aumento detectado pode ser um 'falso positivo' "
-                            f"causado por uma epidemia de {confundidor}.")
+                if val_espelho > val_alvo * 0.7:
+                    st.info(f"**Risco de Confusão:** Nota-se que buscas por '{confundidores[0]}' estão muito altas. "
+                            f"Como os sintomas são parecidos, os dados de {doenca_foco} podem estar distorcidos por este agravo secundário.")
                 else:
-                    st.write("✅ **DADOS CONSISTENTES:** A curva desta patologia está isolada de seus principais confundidores clínicos.")
+                    st.write("Os dados apresentam alta especificidade para a patologia alvo, com baixo ruído de doenças espelho.")
 
-            # --- VISUALIZAÇÕES GRÁFICAS ---
-            st.divider()
-            tab_mapa, tab_sintomas, tab_distorsao = st.tabs(["🗺️ Mapa Geográfico", "📈 Convergência de Sintomas", "🔄 Análise Comparativa"])
+        # ---------------------------------------------------------
+        # EXIBIÇÃO: VISUALIZAÇÕES GEOGRÁFICAS E TEMPORAIS
+        # ---------------------------------------------------------
+        st.divider()
+        tab1, tab2, tab3 = st.tabs(["🗺️ Mapa de Intensidade Nacional", "📈 Curva de Sintomas Sentinelas", "🔄 Comparativo Diferencial"])
 
-            with tab_mapa:
-                st.subheader("Disseminação Espacial (Mês Atual)")
+        with tab1:
+            if df_mapa is not None:
+                st.subheader("Disseminação Espacial dos Rumores")
                 df_mapa_res = df_mapa.reset_index()
                 fig_mapa = px.choropleth(
                     df_mapa_res,
@@ -148,20 +194,31 @@ if st.button(f"🔍 EXECUTAR VARREDURA PROFUNDA: {doenca_foco.upper()}"):
                     color=df_mapa_res.columns[1],
                     color_continuous_scale="Reds",
                     scope="south america",
-                    template="plotly_dark"
+                    template="plotly_white"
                 )
                 fig_mapa.update_geos(fitbounds="locations", visible=False)
                 st.plotly_chart(fig_mapa, use_container_width=True)
+                
 
-            with tab_sintomas:
-                st.subheader("Comportamento dos Sintomas Sentinelas")
-                st.line_chart(df_sintomas)
-                st.caption("A proximidade e sincronia entre as linhas indicam a validade epidemiológica do surto.")
+[Image of a choropleth map of Brazil]
 
-            with tab_distorsao:
-                st.subheader(f"Diferencial: {doenca_foco} vs {confundidor}")
-                st.line_chart(df_distorsao[[doenca_foco, confundidor]])
-                st.write("Se a linha do confundidor estiver acima ou colada na linha alvo, a especificidade do dado digital é baixa.")
 
-    except Exception as e:
-        st.error(f"Erro na varredura: {e}. O Google pode ter limitado o acesso. Aguarde alguns minutos.")
+        with tab2:
+            st.subheader("Análise de Convergência de Sintomas")
+            st.line_chart(df_sintomas)
+            st.caption("A proximidade entre as linhas indica que os pacientes estão buscando a síndrome completa, não apenas termos isolados.")
+
+        with tab3:
+            st.subheader(f"Diferencial Digital: {doenca_foco} vs {confundidores[0]}")
+            if df_distorsao is not None:
+                st.line_chart(df_distorsao[[doenca_foco, confundidores[0]]])
+                st.caption(f"Se as linhas estiverem sobrepostas, há alta incerteza diagnóstica nos dados digitais.")
+
+    else:
+        st.warning("Não foi possível recuperar dados suficientes. Tente selecionar outro período ou agravo.")
+
+# =================================================================
+# FOOTER DE PESQUISA
+# =================================================================
+st.markdown("---")
+st.caption(f"Plataforma de Vigilância Preditiva v7.0 | Dados atualizados em: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
