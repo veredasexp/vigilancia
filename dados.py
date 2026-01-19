@@ -1,106 +1,159 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 from pytrends.request import TrendReq
 import plotly.express as px
+import plotly.graph_objects as go
+from scipy.stats import pearsonr
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
-# Configurações de Interface de Pesquisa
+# --- CONFIGURAÇÃO DA INTERFACE ---
 st.set_page_config(page_title="Vigilância Epidemiológica Avançada", layout="wide")
-st.title("🔬 Sistema de Inteligência e Vigilância Preditiva")
-st.markdown("---")
+st.title("🔬 Plataforma de Vigilância Digital e Validação Epidemiológica")
+st.markdown("""
+Esta plataforma realiza a varredura proativa de síndromes e valida a eficácia dos rumores digitais 
+cruzando-os com dados reais de internações.
+""")
 
-# 1. DEFINIÇÃO DA MATRIZ DE VIGILÂNCIA (Sem "chutes")
-# O sistema monitora grupos sindrômicos completos
-matriz_vigilancia = {
-    "Arboviroses (Dengue/Zika/Chik)": ["dengue", "sintomas dengue", "chikungunya"],
-    "Síndromes Respiratórias (Gripe/COVID)": ["gripe", "sintomas gripe", "tosse seca"],
-    "Doenças de Transmissão Hídrica": ["diarreia", "vômito", "infecção intestinal"],
+# --- MOTOR DE BUSCA (BACKEND) ---
+try:
+    pytrends = TrendReq(hl='pt-BR', tz=360)
+except:
+    st.error("Erro ao conectar ao Google. Tente novamente em instantes.")
+
+# --- DICIONÁRIO DE VIGILÂNCIA (SINDROMES) ---
+SINDROMES = {
+    "Arboviroses (Dengue/Zika)": ["dengue", "sintomas dengue", "dor atrás dos olhos"],
+    "Síndrome Respiratória": ["gripe", "falta de ar", "tosse seca", "influenza"],
+    "Síndrome Gastrointestinal": ["diarreia", "vômito", "enjoo", "dor abdominal"],
     "Doenças Exantemáticas": ["manchas vermelhas", "sarampo", "rubéola"]
 }
 
-# 2. CONFIGURAÇÃO DA API
-pytrends = TrendReq(hl='pt-BR', tz=360)
+# --- SIDEBAR: INPUT DE DADOS REAIS ---
+st.sidebar.header("📂 Validação de Dados Reais")
+st.sidebar.markdown("Para calcular a correlação, suba uma planilha com as colunas **'Data'** e **'Internacoes'**.")
+arquivo_real = st.sidebar.file_uploader("Upload de dados do SINAN/Hospitais", type=['csv', 'xlsx'])
 
-# Barra Lateral com Filtros de Pesquisa
-st.sidebar.header("Parâmetros da Pesquisa")
-uf_alvo = st.sidebar.selectbox("Estado Polo:", ["BR-MS", "BR-SP", "BR-RJ", "BR-MG", "BR-PR", "BR-GO"])
-
-if st.button("📡 INICIAR VARREDURA EPIDEMIOLÓGICA"):
-    try:
-        resultados_analise = []
-        
-        with st.status("Executando varredura multidimensional...", expanded=True) as status:
-            for sindrome, termos in matriz_vigilancia.items():
-                st.write(f"Analisando comportamento de: {sindrome}")
-                
-                # Coleta de dados temporais (3 meses)
-                pytrends.build_payload(termos, geo=uf_alvo, timeframe='today 3-m')
-                df_tempo = pytrends.interest_over_time()
-                
-                # Coleta de dados geográficos (Mapa de Calor)
-                pytrends.build_payload([termos[0]], geo=uf_alvo, timeframe='today 1-m')
-                df_city = pytrends.interest_by_region(resolution='CITY', inc_low_vol=True)
-                
-                if not df_tempo.empty:
-                    # Cálculos Estatísticos
-                    serie_media = df_tempo[termos].mean(axis=1)
-                    hoje = serie_media.iloc[-1]
-                    media_periodo = serie_media.mean()
-                    desvio = serie_media.std()
-                    
-                    # Cálculo de Alerta (Z-Score simplificado)
-                    alerta = (hoje - media_periodo) / desvio if desvio > 0 else 0
-                    
-                    resultados_analise.append({
-                        "Sindrome": sindrome,
-                        "Intensidade": hoje,
-                        "Indice_Alerta": alerta,
-                        "Dados": serie_media,
-                        "Cidades": df_city
-                    })
-                time.sleep(2) # Evitar bloqueio da Google
-            status.update(label="Varredura concluída com sucesso!", state="complete")
-
-        # --- EXIBIÇÃO DOS RESULTADOS ANALÍTICOS ---
-        
-        # Ordenar por maior índice de alerta (Proatividade)
-        resultados_analise.sort(key=lambda x: x['Indice_Alerta'], reverse=True)
-        mais_critica = resultados_analise[0]
-
-        # 3. PARECER TÉCNICO DESCRITIVO (Análise em Texto)
-        st.subheader("📝 Parecer Técnico de Vigilância")
-        col_text, col_metric = st.columns([3, 1])
-        
-        with col_text:
-            data_atual = datetime.now().strftime('%d/%m/%Y')
-            st.markdown(f"""
-            **Relatório de Evidências - {data_atual}** Após a varredura automática, o sistema identificou que o grupo **{mais_critica['Sindrome']}** apresenta o maior desvio estatístico no estado selecionado. 
-            O índice de busca atual está {mais_critica['Indice_Alerta']:.2f} desvios padrões acima da média histórica recente.
+# --- ABA PRINCIPAL: VARREDURA ---
+if st.button("🚀 INICIAR VARREDURA INTEGRAL E ANÁLISE DE CORRELAÇÃO"):
+    resultados_globais = []
+    
+    with st.status("Processando inteligência de dados...", expanded=True) as status:
+        for nome_s, termos in SINDROMES.items():
+            st.write(f"Analisando: {nome_s}...")
             
-            **Conclusão da Pesquisa:** Há uma correlação positiva entre o aumento de rumores digitais e a possível pressão assistencial em unidades de saúde primária para este agravo.
+            # 1. Coleta Temporal (Últimos 90 dias)
+            pytrends.build_payload(termos, geo='BR-MS', timeframe='today 3-m')
+            df_trends = pytrends.interest_over_time()
+            
+            # 2. Coleta Regional (Para o Mapa de Calor)
+            pytrends.build_payload([termos[0]], geo='BR', timeframe='today 1-m')
+            df_regiao = pytrends.interest_by_region(resolution='COUNTRY', inc_low_vol=True)
+            
+            if not df_trends.empty:
+                # Processamento de Médias
+                df_trends['media_sindrome'] = df_trends[termos].mean(axis=1)
+                hoje = df_trends['media_sindrome'].iloc[-1]
+                media_historica = df_trends['media_sindrome'].mean()
+                desvio_padrao = df_trends['media_sindrome'].std()
+                z_score = (hoje - media_historica) / desvio_padrao if desvio_padrao > 0 else 0
+                
+                resultados_globais.append({
+                    "nome": nome_s,
+                    "z_score": z_score,
+                    "hoje": hoje,
+                    "df": df_trends,
+                    "mapa": df_regiao
+                })
+            time.sleep(1.5) # Proteção de taxa de acesso
+        status.update(label="Análise Concluída!", state="complete")
+
+    if resultados_globais:
+        # --- IDENTIFICAÇÃO DO AGRAVO PRIORITÁRIO ---
+        resultados_globais.sort(key=lambda x: x['z_score'], reverse=True)
+        critico = resultados_globais[0]
+
+        # --- SEÇÃO 1: PARECER TÉCNICO DETALHADO ---
+        st.header("📝 Parecer Analítico de Vigilância")
+        col_txt, col_metric = st.columns([3, 1])
+        
+        with col_txt:
+            interpretação = "estável" if critico['z_score'] < 1.5 else "em alerta moderado" if critico['z_score'] < 2.5 else "em estado crítico de surto"
+            st.markdown(f"""
+            O sistema realizou a varredura em 4 grandes grupos sindrômicos. O grupo com maior desvio detectado foi **{critico['nome']}**. 
+            
+            **Análise Estatística:** O valor atual apresenta um **Z-Score de {critico['z_score']:.2f}**. Na epidemiologia digital, valores acima de 2.0 indicam que o volume de buscas rompeu o canal endêmico histórico. 
+            Este aumento sugere uma circulação viral ativa no estado, precedendo o pico de notificações oficiais em aproximadamente 7 a 14 dias.
             """)
         
         with col_metric:
-            st.metric("Nível de Alerta", f"{mais_critica['Indice_Alerta']:.2f}", "Crítico" if mais_critica['Indice_Alerta'] > 1.5 else "Estável")
+            st.metric("Índice de Anomalia", f"{critico['z_score']:.2f}", delta="Crítico" if critico['z_score'] > 2 else "Normal")
 
-        st.markdown("---")
+        # --- SEÇÃO 2: MAPA DE CALOR (MAPA REAL POR ESTADO) ---
+        st.subheader("🗺️ Disseminação Geográfica Nacional")
+        df_mapa_res = critico['mapa'].reset_index()
+        
+        fig_mapa = px.choropleth(
+            df_mapa_res,
+            geojson="https://raw.githubusercontent.com/codeforamerica/click_that_hood/master/public/data/brazil-states.geojson",
+            locations='geoName',
+            featureidkey="properties.name",
+            color=df_mapa_res.columns[1],
+            color_continuous_scale="Reds",
+            scope="south america",
+            labels={'geoName': 'Estado', df_mapa_res.columns[1]: 'Intensidade'}
+        )
+        fig_mapa.update_geos(fitbounds="locations", visible=False)
+        st.plotly_chart(fig_mapa, use_container_width=True)
+        
 
-        # 4. VISUALIZAÇÃO GEOGRÁFICA (Mapa de Calor por Cidades)
-        st.subheader(f"📍 Mapa de Concentração Regional: {mais_critica['Sindrome']}")
-        if not mais_critica['Cidades'].empty:
-            df_mapa = mais_critica['Cidades'].reset_index()
-            fig = px.bar(df_mapa.sort_values(by=df_mapa.columns[1], ascending=False).head(15), 
-                         x=df_mapa.columns[1], y='geoName', orientation='h',
-                         color=df_mapa.columns[1], color_continuous_scale="Reds",
-                         labels={'geoName': 'Município', df_mapa.columns[1]: 'Intensidade de Rumores'})
-            st.plotly_chart(fig, use_container_width=True)
-            st.caption("Nota: O mapa exibe os municípios com maior volume de buscas proporcionais.")
+        # --- SEÇÃO 3: VALIDAÇÃO POR CORRELAÇÃO (DADOS REAIS) ---
+        st.divider()
+        st.header("📊 Validação Científica: Rumores vs. Internações")
+        
+        if arquivo_real:
+            # Processamento da Planilha
+            df_interno = pd.read_csv(arquivo_real) if arquivo_real.name.endswith('csv') else pd.read_excel(arquivo_real)
+            df_interno['Data'] = pd.to_datetime(df_interno['Data'])
+            
+            # Alinhamento das séries
+            df_google = critico['df'].reset_index()
+            df_google['date'] = pd.to_datetime(df_google['date'])
+            
+            df_merge = pd.merge(df_google, df_interno, left_on='date', right_on='Data')
+            
+            if not df_merge.empty:
+                # Cálculo de Pearson
+                coef_p, p_valor = pearsonr(df_merge['media_sindrome'], df_merge['Internacoes'])
+                
+                c1, c2 = st.columns([1, 2])
+                with c1:
+                    st.write("### Coeficiente de Pearson")
+                    st.title(f"R = {coef_p:.3f}")
+                    if coef_p > 0.7:
+                        st.success("✅ **Correlação Forte:** O Google Trends é um preditor confiável para internações neste agravo.")
+                    else:
+                        st.warning("⚠️ **Correlação Fraca:** Os dados digitais e hospitalares não estão sincronizados.")
+                
+                with c2:
+                    # Gráfico de Duplo Eixo
+                    fig_dual = go.Figure()
+                    fig_dual.add_trace(go.Scatter(x=df_merge['date'], y=df_merge['media_sindrome'], name="Buscas Google", line=dict(color='blue')))
+                    fig_dual.add_trace(go.Scatter(x=df_merge['date'], y=df_merge['Internacoes'], name="Internações Reais", line=dict(color='red'), yaxis="y2"))
+                    
+                    fig_dual.update_layout(
+                        title="Sincronia Temporal: Rumores vs. Fatos",
+                        yaxis=dict(title="Volume de Buscas"),
+                        yaxis2=dict(title="Nº Internações", overlaying="y", side="right")
+                    )
+                    st.plotly_chart(fig_dual, use_container_width=True)
+            else:
+                st.error("As datas da planilha não coincidem com os dados capturados do Google.")
+        else:
+            st.info("Suba uma planilha de internações na barra lateral para ver a validação estatística aqui.")
 
-        # 5. SÉRIE TEMPORAL DETALHADA
-        st.subheader("📈 Evolução dos Agravos Monitorados")
-        df_comparativo = pd.DataFrame({r['Sindrome']: r['Dados'] for r in resultados_analise})
-        st.line_chart(df_comparativo)
-
-    except Exception as e:
-        st.error(f"Erro na conexão com o banco de dados: {e}. Tente reiniciar a varredura.")
+        # --- SEÇÃO 4: COMPARATIVO GERAL ---
+        st.subheader("📈 Monitoramento Comparativo de Síndromes")
+        df_all = pd.DataFrame({r['nome']: r['df']['media_sindrome'] for r in resultados_globais})
+        st.line_chart(df_all)
