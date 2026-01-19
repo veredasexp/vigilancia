@@ -2,11 +2,11 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from pytrends.request import TrendReq
-from scipy.stats import zscore, pearsonr, linregress
+from scipy.stats import zscore, pearsonr
 import plotly.express as px
 import plotly.graph_objects as go
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # ==============================================================================
 # 1. CONFIGURAÇÃO DO AMBIENTE E ARQUITETURA DE SISTEMA
@@ -30,42 +30,43 @@ st.markdown("""
 # ==============================================================================
 class ConnectionEngine:
     """
-    Gerencia a conexão com o Google Trends, implementando lógica de 
-    Backoff Exponencial e Retentativa para mitigar erros 429.
+    Gerencia a conexão com o Google Trends.
+    CORREÇÃO V13: Removemos o retry automático da biblioteca para evitar conflito
+    de versão (method_whitelist error). O retry agora é gerenciado manualmente.
     """
     def __init__(self):
         self.hl = 'pt-BR'
         self.tz = 360
-        self.retries = 3
-        self.backoff_factor = 0.5
 
     def conectar(self):
-        return TrendReq(hl=self.hl, tz=self.tz, retries=self.retries, backoff_factor=self.backoff_factor)
+        # Correção: Inicialização limpa sem parâmetros de retry que causam crash em versões novas
+        return TrendReq(hl=self.hl, tz=self.tz)
 
     def executar_busca_blindada(self, termos, geo, timeframe):
-        """Tenta buscar dados com múltiplas estratégias de falha."""
+        """Tenta buscar dados com múltiplas estratégias manuais de falha."""
         pytrends = self.conectar()
         
-        # Estratégia 1: Busca Padrão
+        # Estratégia 1: Busca Padrão (3 meses)
         try:
             pytrends.build_payload(termos, geo=geo, timeframe=timeframe)
             df = pytrends.interest_over_time()
             if not df.empty:
                 return df.drop(columns=['isPartial'], errors='ignore')
         except Exception as e:
-            st.warning(f"Tentativa 1 falhou ({e}). Iniciando protocolo de redundância...")
+            # Apenas loga o aviso e continua para a estratégia 2
+            pass # Silenciamos o erro visual para tentar a redundância discretamente
         
-        # Estratégia 2: Redução de Janela (Fallback)
-        time.sleep(2)
+        # Estratégia 2: Redução de Janela (Fallback - 1 mês)
+        time.sleep(1) # Pequena pausa para respirar
         try:
             fallback_tf = 'today 1-m'
             pytrends.build_payload(termos, geo=geo, timeframe=fallback_tf)
             df = pytrends.interest_over_time()
             if not df.empty:
-                st.info(f"Dados recuperados com janela reduzida: {fallback_tf}")
+                st.info(f"Nota: Dados recuperados com janela reduzida ({fallback_tf}) devido à instabilidade da conexão.")
                 return df.drop(columns=['isPartial'], errors='ignore')
         except Exception as e:
-            st.error(f"Falha crítica na conexão: {e}")
+            st.error(f"Não foi possível estabelecer conexão segura. Erro técnico: {e}")
             return None
 
     def buscar_mapa(self, termo, timeframe):
@@ -159,6 +160,7 @@ class MathEngine:
     @staticmethod
     def calcular_asi(serie):
         """Calcula Índice de Saturação de Atenção (Volatilidade)."""
+        if serie.mean() == 0: return 0
         cv = serie.std() / (serie.mean() + 0.01) # Coeficiente de Variação
         return cv
 
@@ -210,10 +212,10 @@ if st.button("🚀 INICIAR VARREDURA EPIDEMIOLÓGICA TOTAL"):
             st.write("📡 Conectando aos servidores de dados...")
             df_raw = conn.executar_busca_blindada(termos_busca, input_uf, 'today 3-m')
             
-            st.write("🗺️ Recuperando dados geoespaciais...")
-            df_mapa = conn.buscar_mapa(col_alvo, 'today 1-m')
-            
             if df_raw is not None:
+                st.write("🗺️ Recuperando dados geoespaciais...")
+                df_mapa = conn.buscar_mapa(col_alvo, 'today 1-m')
+                
                 st.write("🧮 Processando cálculo diferencial e estatística robusta...")
                 
                 # --- Pipeline Matemático ---
@@ -258,7 +260,12 @@ if st.button("🚀 INICIAR VARREDURA EPIDEMIOLÓGICA TOTAL"):
                 # --- KPIs Principais ---
                 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
                 
-                delta_limiar = ((val_atual - val_limiar) / val_limiar) * 100
+                # Tratamento de divisão por zero se o limiar for muito baixo
+                if val_limiar > 0:
+                    delta_limiar = ((val_atual - val_limiar) / val_limiar) * 100
+                else:
+                    delta_limiar = 0
+                    
                 kpi1.metric("Intensidade (Suave 7D)", f"{val_atual:.1f}", f"{delta_limiar:.1f}% vs Limiar")
                 
                 kpi2.metric("Vero-Index (Fidelidade)", f"{vero_index:.2f}", "Alta Confiabilidade" if vero_index > 1 else "Possível Ruído")
@@ -280,7 +287,6 @@ if st.button("🚀 INICIAR VARREDURA EPIDEMIOLÓGICA TOTAL"):
                     fig_main.add_trace(go.Scatter(x=df_proc.index, y=df_proc[alvo_s], mode='lines', name=f'Casos (Estimados)', line=dict(color='blue', width=2)))
                     fig_main.add_trace(go.Scatter(x=df_proc.index, y=df_proc['limiar'], mode='lines', name='Limiar Endêmico', line=dict(color='red', dash='dash')))
                     st.plotly_chart(fig_main, use_container_width=True)
-                    
 
                 with col_analysis:
                     st.subheader("🩺 Diagnóstico Algorítmico")
@@ -321,7 +327,7 @@ if st.button("🚀 INICIAR VARREDURA EPIDEMIOLÓGICA TOTAL"):
                         fig_map.update_geos(fitbounds="locations", visible=False)
                         st.plotly_chart(fig_map, use_container_width=True)
                     else:
-                        st.warning("Dados geográficos indisponíveis nesta janela de tempo.")
+                        st.warning("Dados geográficos indisponíveis nesta janela de tempo (API Limit).")
                 
                 with tab2:
                     st.subheader("Correlação: Doença vs Tratamento")
@@ -369,4 +375,4 @@ if st.button("🚀 INICIAR VARREDURA EPIDEMIOLÓGICA TOTAL"):
                     st.download_button("📝 Baixar Parecer Técnico (TXT)", relatorio_txt, f"parecer_{input_doenca}.txt", "text/plain")
 
             else:
-                st.error("❌ O sistema de proteção do Google bloqueou todas as tentativas de conexão. Tente novamente em 15 minutos.")
+                st.error("❌ O sistema de proteção do Google bloqueou as conexões. Isso é comum em ambientes compartilhados. Aguarde alguns minutos e tente novamente.")
