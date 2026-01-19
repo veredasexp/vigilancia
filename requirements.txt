@@ -1,7 +1,5 @@
 streamlit
 pandas
 pytrends
-plotly
 scipy
 numpy
-urllib3==1.26.15
