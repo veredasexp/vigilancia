@@ -1,5 +1,7 @@
 streamlit
 pandas
 pytrends
-scipy
 numpy
+scipy
+plotly
+urllib3
